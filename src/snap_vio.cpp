@@ -439,6 +439,11 @@ void SnapVio::PublishVioData(mvVISLAMPose& vio_pose, int64_t vio_frame_id,
                     vio_pose.gravity[2]);
   tf2::Vector3 unit_z(0,0,1);
   tf2::Quaternion q_grav( grav.cross(unit_z), grav.angle(unit_z));
+  if (std::isnan(q_grav.length()) || q_grav.length() < 1e-6) {
+    // This indicates that VISLAM is not yet fully initialized
+    ROS_WARN_THROTTLE(1, "Bad gravity vector estimate detected. Skipping pose update.");
+    return;
+  }
   if(snav_mode_)
   {
     tf2::convert(q_grav.inverse(),grav_to_imu_start.transform.rotation);
