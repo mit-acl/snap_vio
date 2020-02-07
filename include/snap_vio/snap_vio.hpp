@@ -126,7 +126,7 @@ private:
 
   void CameraInfoCallback(const sensor_msgs::CameraInfoConstPtr& msg);
 
-  tf2_ros::TransformBroadcaster tf_broadcaster_;
+  ros::Publisher pub_imu_wrt_odom_;
   ros::Publisher vio_pose_publisher_;
   ros::Publisher vio_odom_publisher_;
   ros::Publisher vio_states_publisher_;
@@ -168,6 +168,7 @@ private:
   bool got_imu_frame_id_;
   bool got_camera_frame_id_;
   bool got_imu_cam_tf_;
+  bool use_tf_;
 
   std::string camera_frame_;
   std::string imu_frame_;
@@ -177,6 +178,7 @@ private:
 
   tf2_ros::Buffer tfBuffer;
   tf2_ros::TransformListener * tfListener;
+  tf2_ros::TransformBroadcaster * tf_broadcaster_;
 
   bool snav_mode_;
 };

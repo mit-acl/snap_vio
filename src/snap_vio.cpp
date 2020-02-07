@@ -39,7 +39,8 @@ SnapVio::SnapVio(ros::NodeHandle nh, ros::NodeHandle pnh)
     im_trans_(nh_),
     img_sub_(im_trans_, "image_raw", 1),
     expo_sub_(nh_, "exposure_times", 1),
-    sync( ExpoSyncPolicy( 10 ), img_sub_, expo_sub_ )
+    sync( ExpoSyncPolicy( 10 ), img_sub_, expo_sub_ ),
+    tfListener(nullptr), tf_broadcaster_(nullptr)
 {
   running_ = false;
   initialized_ = false;
@@ -96,9 +97,12 @@ SnapVio::SnapVio(ros::NodeHandle nh, ros::NodeHandle pnh)
   pnh_.param<std::string>("odom_frame_id", odom_frame_, "odom");
   pnh_.param<std::string>("grav_frame_id", grav_frame_, "grav");
   pnh_.param<std::string>("imu_start_frame_id", imu_start_frame_, "imu_start");
+  pnh_.param<bool>("use_tf", use_tf_, true);
 
   tfListener = new tf2_ros::TransformListener(tfBuffer);
+  if (use_tf_) tf_broadcaster_ = new tf2_ros::TransformBroadcaster;
 
+  pub_imu_wrt_odom_ = nh_.advertise<geometry_msgs::PoseStamped>("vio/imu_wrt_odom",1);
   vio_pose_publisher_ = nh_.advertise<geometry_msgs::PoseStamped>("vio/pose",1);
   vio_odom_publisher_ = nh_.advertise<nav_msgs::Odometry>("vio/odometry",1);
   vio_states_publisher_ = nh_.advertise<snap_msgs::InternalStates>("vio/internal_states",1);
@@ -117,6 +121,10 @@ SnapVio::~SnapVio() {
   if (vislam_ptr_ != nullptr) {
     mvVISLAM_Deinitialize( vislam_ptr_ );
     vislam_ptr_ = nullptr;
+  }
+
+  if (tf_broadcaster_ != nullptr) {
+    delete tf_broadcaster_;
   }
 }
 
@@ -419,9 +427,8 @@ void SnapVio::PublishVioData(mvVISLAMPose& vio_pose, int64_t vio_frame_id,
                              ros::Time vio_timestamp) {
   std::vector<geometry_msgs::TransformStamped> transforms;
 
-  if(!snav_mode_)
-  {
-    geometry_msgs::TransformStamped odom_to_grav;
+  geometry_msgs::TransformStamped odom_to_grav;
+  if (!snav_mode_) {
     odom_to_grav.transform.translation.x = 0;
     odom_to_grav.transform.translation.y = 0;
     odom_to_grav.transform.translation.z = 0;
@@ -458,6 +465,10 @@ void SnapVio::PublishVioData(mvVISLAMPose& vio_pose, int64_t vio_frame_id,
   }
   grav_to_imu_start.header.stamp = vio_timestamp;
   transforms.push_back(grav_to_imu_start);
+
+  //
+  // IMU pose w.r.t IMU start
+  //
 
   geometry_msgs::PoseStamped pose_msg;
   pose_msg.header.frame_id = imu_start_frame_;
@@ -497,6 +508,40 @@ void SnapVio::PublishVioData(mvVISLAMPose& vio_pose, int64_t vio_frame_id,
   imu_start_to_imu.header.frame_id = imu_start_frame_;
   imu_start_to_imu.header.stamp = vio_timestamp;
 
+  //
+  // Report IMU pose w.r.t odom
+  //
+
+  // gravity w.r.t odom
+  tf2::Transform T_OG;
+  tf2::convert(odom_to_grav.transform, T_OG);
+
+  // IMU start w.r.t gravity
+  tf2::Transform T_GIs;
+  tf2::convert(grav_to_imu_start.transform, T_GIs);
+
+  // IMU w.r.t IMU start
+  tf2::Transform T_IsI;
+  tf2::convert(imu_start_to_imu.transform, T_IsI);
+
+  // IMU w.r.t odom --- build pose message
+  tf2::Transform T_OI = T_OG * T_GIs * T_IsI;
+  geometry_msgs::Transform msg_T_OI;
+  tf2::convert(T_OI, msg_T_OI);
+  geometry_msgs::PoseStamped msg_P_OI;
+  msg_P_OI.pose.position.x = msg_T_OI.translation.x;
+  msg_P_OI.pose.position.y = msg_T_OI.translation.y;
+  msg_P_OI.pose.position.z = msg_T_OI.translation.z;
+  msg_P_OI.pose.orientation.x = msg_T_OI.rotation.x;
+  msg_P_OI.pose.orientation.y = msg_T_OI.rotation.y;
+  msg_P_OI.pose.orientation.z = msg_T_OI.rotation.z;
+  msg_P_OI.pose.orientation.w = msg_T_OI.rotation.w;
+  msg_P_OI.header = pose_msg.header;
+  msg_P_OI.header.frame_id = odom_frame_;
+  pub_imu_wrt_odom_.publish(msg_P_OI);
+
+
+
   if(snav_mode_)
   {
     tf2::Transform vio_tf, vio_tf_inv;
@@ -525,7 +570,7 @@ void SnapVio::PublishVioData(mvVISLAMPose& vio_pose, int64_t vio_frame_id,
   // with qflight_descriptions publshing base_link->imu
 
   //Send all the transforms
-  tf_broadcaster_.sendTransform(transforms);
+  if (use_tf_) tf_broadcaster_->sendTransform(transforms);
 
   nav_msgs::Odometry odom_msg;
   odom_msg.header.stamp = vio_timestamp;
